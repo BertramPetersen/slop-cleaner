@@ -13,8 +13,9 @@ including Markdown, JSON, YAML, and lockfiles, are ignored.
 npm install --global slop-cleaner
 ```
 
-The repository must have an `origin` remote, `gh` must be installed and authenticated, and the
-working tree must be clean.
+The repository must have an `origin` remote, and `gh` must be installed and authenticated. The
+tool creates an isolated temporary worktree for the selected PR, so the current working tree may
+contain uncommitted changes.
 
 ## Use
 
@@ -22,8 +23,9 @@ working tree must be clean.
 slop-cleaner
 ```
 
-The command lists open PRs for the current repository, lets you select one, checks it out, and
-writes comment records with source context to `.slop-cleaner/`.
+The command lists open PRs for the current repository, lets you select one, creates an isolated
+worktree, and reviews comments with source context there. The worktree is left in place so you can
+inspect or commit the resulting changes without affecting your original checkout.
 
 After an agent has produced a decisions JSON file, apply it with:
 

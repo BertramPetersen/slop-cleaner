@@ -12,8 +12,12 @@ function command(...args) {
   return execFileSync(args[0], args.slice(1), { encoding: "utf8" });
 }
 
-function changedLines(base, head) {
-  const diff = command("git", "diff", "--no-color", "--unified=0", `${base}...${head}`);
+function commandIn(cwd, ...args) {
+  return execFileSync(args[0], args.slice(1), { cwd, encoding: "utf8" });
+}
+
+function changedLines(base, head, cwd = process.cwd()) {
+  const diff = commandIn(cwd, "git", "diff", "--no-color", "--unified=0", `${base}...${head}`);
   const result = new Map();
   let file;
   for (const line of diff.split("\n")) {
@@ -34,13 +38,14 @@ function changedLines(base, head) {
   return result;
 }
 
-function extract({ base, head, context = 4 }) {
-  const changed = changedLines(base, head);
+function extract({ base, head, context = 4, root = process.cwd() }) {
+  const changed = changedLines(base, head, root);
   const records = [];
   for (const [file, lines] of changed) {
     if (!parserByExtension.has(file.slice(file.lastIndexOf(".")).toLowerCase())) continue;
-    if (!existsSync(file)) continue;
-    const source = readFileSync(file, "utf8");
+    const sourcePath = resolve(root, file);
+    if (!existsSync(sourcePath)) continue;
+    const source = readFileSync(sourcePath, "utf8");
     const sourceLines = source.split(/\r?\n/);
     for (const comment of extractComments(file, source)) {
       if (![...lines].some((line) => line >= comment.start_line && line <= comment.end_line)) continue;
@@ -63,7 +68,7 @@ function extract({ base, head, context = 4 }) {
   return records;
 }
 
-function apply(inputPath, decisionsPath) {
+function apply(inputPath, decisionsPath, root = process.cwd()) {
   const records = Object.fromEntries(JSON.parse(readFileSync(inputPath, "utf8")).map((record) => [record.id, record]));
   const decisions = JSON.parse(readFileSync(decisionsPath, "utf8"));
   const edits = new Map();
@@ -71,7 +76,7 @@ function apply(inputPath, decisionsPath) {
     const record = records[decision.id];
     if (!record || !["keep", "delete", "rewrite", "escalate"].includes(decision.decision)) throw new Error(`invalid decision: ${JSON.stringify(decision)}`);
     if (["keep", "escalate"].includes(decision.decision)) continue;
-    const file = resolve(record.file);
+    const file = resolve(root, record.file);
     const source = readFileSync(file, "utf8");
     const start = source.indexOf(record.raw);
     if (start < 0 || source.indexOf(record.raw, start + 1) >= 0) throw new Error(`stale or ambiguous comment ${record.id} in ${record.file}`);
@@ -92,7 +97,6 @@ function apply(inputPath, decisionsPath) {
 async function runInteractive() {
   let remote;
   try { remote = command("git", "remote", "get-url", "origin").trim(); } catch { throw new Error("current directory has no remote named origin"); }
-  if (command("git", "status", "--porcelain").trim()) throw new Error("working tree is not clean; commit or stash changes first");
   let pullRequests;
   try { pullRequests = JSON.parse(command("gh", "pr", "list", "--state", "open", "--limit", "100", "--json", "number,title,baseRefName,headRefName,url")); }
   catch { throw new Error("could not list open PRs; install gh and run gh auth login"); }
@@ -105,14 +109,23 @@ async function runInteractive() {
   if (answer.toLowerCase() === "q") return;
   const selected = pullRequests[Number(answer) - 1];
   if (!selected) throw new Error("invalid PR selection");
-  const checkout = spawnSync("gh", ["pr", "checkout", String(selected.number)], { stdio: "inherit" });
-  if (checkout.status !== 0) throw new Error(`could not check out PR #${selected.number}`);
-  const records = extract({ base: `origin/${selected.baseRefName}`, head: "HEAD" });
-  mkdirSync(".slop-cleaner", { recursive: true });
-  await reviewRecords(records, `.slop-cleaner/pr-${selected.number}-decisions.json`);
+  try {
+    command("git", "fetch", "origin", `pull/${selected.number}/head`);
+  } catch (error) {
+    throw new Error(`could not fetch PR #${selected.number}: ${error.message}`);
+  }
+  const worktree = resolve(`/tmp/slop-cleaner-pr-${selected.number}`);
+  if (existsSync(worktree)) throw new Error(`worktree already exists at ${worktree}; remove it or choose another PR`);
+  const added = spawnSync("git", ["worktree", "add", "--detach", worktree, "FETCH_HEAD"], { stdio: "inherit" });
+  if (added.status !== 0) throw new Error(`could not create isolated worktree at ${worktree}`);
+  const records = extract({ base: `origin/${selected.baseRefName}`, head: "HEAD", root: worktree });
+  const state = resolve(worktree, ".slop-cleaner");
+  mkdirSync(state, { recursive: true });
+  await reviewRecords(records, resolve(state, `pr-${selected.number}-decisions.json`), worktree);
+  console.log(`Isolated PR worktree: ${worktree}`);
 }
 
-async function reviewRecords(records, decisionsPath) {
+async function reviewRecords(records, decisionsPath, root = process.cwd()) {
   if (!records.length) {
     console.log("No comments were found on changed lines.");
     return;
@@ -156,18 +169,18 @@ async function reviewRecords(records, decisionsPath) {
   const confirmation = (await confirmationReader.question("Apply these changes? [y/N] ")).trim().toLowerCase();
   confirmationReader.close();
   if (confirmation === "y" || confirmation === "yes") {
-    applyRecords(records, decisions, decisionsPath);
+    applyRecords(records, decisions, decisionsPath, root);
     console.log("Changes applied. Run your formatter and tests, then inspect git diff.");
   } else {
     console.log(`Decisions saved to ${decisionsPath}; no files were changed.`);
   }
 }
 
-function applyRecords(records, decisions, decisionsPath) {
-  const recordsPath = ".slop-cleaner/comments.json";
+function applyRecords(records, decisions, decisionsPath, root = process.cwd()) {
+  const recordsPath = resolve(root, ".slop-cleaner/comments.json");
   writeFileSync(recordsPath, `${JSON.stringify(records, null, 2)}\n`);
   writeFileSync(decisionsPath, `${JSON.stringify(decisions, null, 2)}\n`);
-  apply(recordsPath, decisionsPath);
+  apply(recordsPath, decisionsPath, root);
 }
 
 function help() {
