@@ -1,0 +1,204 @@
+#!/usr/bin/env node
+
+import { execFileSync, spawnSync } from "node:child_process";
+import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
+import { createInterface } from "node:readline/promises";
+import { stdin as input, stdout as output } from "node:process";
+import { fileURLToPath } from "node:url";
+import { resolve } from "node:path";
+
+const lineMarkers = ["//", "#", "--"];
+const blockPairs = [["/*", "*/"], ["<!--", "-->"]];
+
+function command(...args) {
+  return execFileSync(args[0], args.slice(1), { encoding: "utf8" });
+}
+
+function changedLines(base, head) {
+  const diff = command("git", "diff", "--no-color", "--unified=0", `${base}...${head}`);
+  const result = new Map();
+  let file;
+  for (const line of diff.split("\n")) {
+    if (line.startsWith("+++ b/")) {
+      file = line.slice(6);
+      if (!result.has(file)) result.set(file, new Set());
+      continue;
+    }
+    const match = line.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/);
+    if (match && file) {
+      const start = Number(match[1]);
+      const count = Number(match[2] ?? 1);
+      for (let lineNumber = start; lineNumber < start + count; lineNumber += 1) {
+        result.get(file).add(lineNumber);
+      }
+    }
+  }
+  return result;
+}
+
+function positionAt(source, offset) {
+  let line = 1;
+  let column = 1;
+  for (let index = 0; index < offset; index += 1) {
+    if (source[index] === "\n") {
+      line += 1;
+      column = 1;
+    } else {
+      column += 1;
+    }
+  }
+  return { line, column };
+}
+
+function scanComments(source) {
+  const comments = [];
+  let index = 0;
+  while (index < source.length) {
+    const quote = source[index];
+    if (quote === "'" || quote === '"' || quote === "`") {
+      index += 1;
+      while (index < source.length) {
+        if (source[index] === "\\") index += 2;
+        else if (source[index++] === quote) break;
+      }
+      continue;
+    }
+    const block = blockPairs.find(([start]) => source.startsWith(start, index));
+    if (block) {
+      const end = source.indexOf(block[1], index + block[0].length);
+      if (end === -1) break;
+      const finish = end + block[1].length;
+      comments.push({ start: index, end: finish, text: source.slice(index + block[0].length, end).trim(), raw: source.slice(index, finish) });
+      index = finish;
+      continue;
+    }
+    const marker = lineMarkers.find((candidate) => source.startsWith(candidate, index));
+    const lineStart = index === 0 || source[index - 1] === "\n";
+    const isDirective = marker === "#" && lineStart && /^(#!|#include|#define)/.test(source.slice(index));
+    if (marker && !(marker === "#" && isDirective)) {
+      const end = source.indexOf("\n", index);
+      const finish = end === -1 ? source.length : end;
+      comments.push({ start: index, end: finish, text: source.slice(index + marker.length, finish).trim(), raw: source.slice(index, finish) });
+      index = finish;
+      continue;
+    }
+    index += 1;
+  }
+  return comments;
+}
+
+function extract({ base, head, context = 4 }) {
+  const changed = changedLines(base, head);
+  const records = [];
+  for (const [file, lines] of changed) {
+    if (!existsSync(file)) continue;
+    const source = readFileSync(file, "utf8");
+    const sourceLines = source.split(/\r?\n/);
+    for (const comment of scanComments(source)) {
+      const start = positionAt(source, comment.start);
+      const end = positionAt(source, comment.end);
+      if (![...lines].some((line) => line >= start.line && line <= end.line)) continue;
+      const first = Math.max(1, start.line - context);
+      const last = Math.min(sourceLines.length, end.line + context);
+      records.push({
+        id: `comment-${records.length + 1}`,
+        file,
+        start_line: start.line,
+        end_line: end.line,
+        start_column: start.column,
+        end_column: end.column,
+        text: comment.text,
+        raw: comment.raw,
+        context: sourceLines.slice(first - 1, last)
+      });
+    }
+  }
+  return records;
+}
+
+function apply(inputPath, decisionsPath) {
+  const records = Object.fromEntries(JSON.parse(readFileSync(inputPath, "utf8")).map((record) => [record.id, record]));
+  const decisions = JSON.parse(readFileSync(decisionsPath, "utf8"));
+  const edits = new Map();
+  for (const decision of decisions) {
+    const record = records[decision.id];
+    if (!record || !["keep", "delete", "rewrite", "escalate"].includes(decision.decision)) throw new Error(`invalid decision: ${JSON.stringify(decision)}`);
+    if (["keep", "escalate"].includes(decision.decision)) continue;
+    const file = resolve(record.file);
+    const source = readFileSync(file, "utf8");
+    const start = source.indexOf(record.raw);
+    if (start < 0 || source.indexOf(record.raw, start + 1) >= 0) throw new Error(`stale or ambiguous comment ${record.id} in ${record.file}`);
+    if (decision.decision === "rewrite" && typeof decision.replacement !== "string") throw new Error(`rewrite ${record.id} needs replacement`);
+    if (!edits.has(file)) edits.set(file, []);
+    edits.get(file).push({ start, end: start + record.raw.length, raw: record.raw, replacement: decision.decision === "delete" ? "" : decision.replacement });
+  }
+  for (const [file, fileEdits] of edits) {
+    let source = readFileSync(file, "utf8");
+    for (const edit of fileEdits.sort((a, b) => b.start - a.start)) {
+      if (source.slice(edit.start, edit.end) !== edit.raw) throw new Error(`file changed while applying ${file}`);
+      source = source.slice(0, edit.start) + edit.replacement + source.slice(edit.end);
+    }
+    writeFileSync(file, source);
+  }
+}
+
+async function runInteractive() {
+  let remote;
+  try { remote = command("git", "remote", "get-url", "origin").trim(); } catch { throw new Error("current directory has no remote named origin"); }
+  if (command("git", "status", "--porcelain").trim()) throw new Error("working tree is not clean; commit or stash changes first");
+  let pullRequests;
+  try { pullRequests = JSON.parse(command("gh", "pr", "list", "--state", "open", "--limit", "100", "--json", "number,title,baseRefName,headRefName,url")); }
+  catch { throw new Error("could not list open PRs; install gh and run gh auth login"); }
+  if (!pullRequests.length) throw new Error(`no open PRs found for ${remote}`);
+  console.log(`Open PRs for ${remote}:`);
+  pullRequests.forEach((pr, index) => console.log(`  ${index + 1}. #${pr.number} ${pr.title} (${pr.headRefName} -> ${pr.baseRefName})`));
+  const reader = createInterface({ input, output });
+  const answer = await reader.question("Select a PR (number, or q to quit): ");
+  reader.close();
+  if (answer.toLowerCase() === "q") return;
+  const selected = pullRequests[Number(answer) - 1];
+  if (!selected) throw new Error("invalid PR selection");
+  const checkout = spawnSync("gh", ["pr", "checkout", String(selected.number)], { stdio: "inherit" });
+  if (checkout.status !== 0) throw new Error(`could not check out PR #${selected.number}`);
+  const records = extract({ base: `origin/${selected.baseRefName}`, head: "HEAD" });
+  mkdirSync(".slop-cleaner", { recursive: true });
+  const path = `.slop-cleaner/pr-${selected.number}-comments.json`;
+  writeFileSync(path, `${JSON.stringify(records, null, 2)}\n`);
+  console.log(`Extracted ${records.length} comment(s) to ${path}`);
+}
+
+function help() {
+  console.log("Usage: slop-cleaner [run|extract|apply]");
+  console.log("  slop-cleaner                 select an open PR and extract comments");
+  console.log("  slop-cleaner extract ...     extract comments for explicit refs");
+  console.log("  slop-cleaner apply ...       apply reviewed decisions");
+}
+
+async function main(argv) {
+  const [subcommand, ...args] = argv;
+  if (!subcommand || subcommand === "run") return runInteractive();
+  if (subcommand === "--help" || subcommand === "-h") return help();
+  if (subcommand === "extract") {
+    const base = args[args.indexOf("--base") + 1];
+    const head = args[args.indexOf("--head") + 1];
+    if (!base || !head) throw new Error("extract requires --base and --head");
+    const records = extract({ base, head, context: Number(args[args.indexOf("--context") + 1] || 4) });
+    const outputPath = args[args.indexOf("--output") + 1];
+    if (outputPath) writeFileSync(outputPath, `${JSON.stringify(records, null, 2)}\n`);
+    else console.log(JSON.stringify(records, null, 2));
+    return;
+  }
+  if (subcommand === "apply") {
+    const inputPath = args[args.indexOf("--input") + 1];
+    const decisionsPath = args[args.indexOf("--decisions") + 1];
+    if (!inputPath || !decisionsPath) throw new Error("apply requires --input and --decisions");
+    return apply(inputPath, decisionsPath);
+  }
+  throw new Error(`unknown command: ${subcommand}`);
+}
+
+if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))) {
+  main(process.argv.slice(2)).catch((error) => { console.error(`slop-cleaner: ${error.message}`); process.exitCode = 1; });
+}
+
+export { apply, changedLines, extract, scanComments };
