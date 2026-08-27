@@ -19,6 +19,18 @@ for a selection. It creates an isolated temporary worktree for the selected PR, 
 checkout may contain uncommitted changes and remains untouched. The isolated worktree is left in
 place for inspection after review.
 
+## Feedback loop
+
+Treat friction as product feedback. If the CLI is confusing, produces an unexpected result, or
+requires a manual workaround, describe the concrete improvement to the user and offer to file it:
+
+```bash
+slop-cleaner --feedback
+```
+
+Ask before creating the issue. Include a minimal reproduction and the behavior that would have been
+better. Do not silently work around recurring friction or invent a fix without telling the user.
+
 Review each displayed comment independently. Do not assume a comment is valid because it uses
 words such as `WHY` or `NOTE`.
 

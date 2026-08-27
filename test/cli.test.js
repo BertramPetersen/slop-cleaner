@@ -1,5 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { apply } from "../src/cli.js";
 import { extractComments } from "../src/parsers.js";
 
 test("TypeScript parser ignores comment markers inside strings", () => {
@@ -31,4 +35,22 @@ test("groups adjacent standalone comments but not trailing comments", () => {
 
 test("unsupported files are ignored", () => {
   assert.deepEqual(extractComments("README.md", "<!-- not source -->"), []);
+});
+
+test("deleting a standalone comment removes its whitespace-only line", () => {
+  const directory = mkdtempSync(join(tmpdir(), "slop-cleaner-test-"));
+  const sourcePath = join(directory, "example.fs");
+  const commentsPath = join(directory, "comments.json");
+  const decisionsPath = join(directory, "decisions.json");
+  writeFileSync(sourcePath, "let value = 1\n  // remove me\nlet next = 2 // keep code\n");
+  writeFileSync(commentsPath, JSON.stringify([
+    { id: "comment-1", file: sourcePath, raw: "// remove me" },
+    { id: "comment-2", file: sourcePath, raw: "// keep code" }
+  ]));
+  writeFileSync(decisionsPath, JSON.stringify([
+    { id: "comment-1", decision: "delete" },
+    { id: "comment-2", decision: "delete" }
+  ]));
+  apply(commentsPath, decisionsPath);
+  assert.equal(readFileSync(sourcePath, "utf8"), "let value = 1\nlet next = 2 \n");
 });
