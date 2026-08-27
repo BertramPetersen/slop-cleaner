@@ -109,6 +109,7 @@ function extract({ base, head, context = 4 }) {
         end_column: end.column,
         text: comment.text,
         raw: comment.raw,
+        context_start_line: first,
         context: sourceLines.slice(first - 1, last)
       });
     }
@@ -162,14 +163,71 @@ async function runInteractive() {
   if (checkout.status !== 0) throw new Error(`could not check out PR #${selected.number}`);
   const records = extract({ base: `origin/${selected.baseRefName}`, head: "HEAD" });
   mkdirSync(".slop-cleaner", { recursive: true });
-  const path = `.slop-cleaner/pr-${selected.number}-comments.json`;
-  writeFileSync(path, `${JSON.stringify(records, null, 2)}\n`);
-  console.log(`Extracted ${records.length} comment(s) to ${path}`);
+  await reviewRecords(records, `.slop-cleaner/pr-${selected.number}-decisions.json`);
+}
+
+async function reviewRecords(records, decisionsPath) {
+  if (!records.length) {
+    console.log("No comments were found on changed lines.");
+    return;
+  }
+  const reader = createInterface({ input, output });
+  const decisions = [];
+  for (const [index, record] of records.entries()) {
+    console.log(`\nComment ${index + 1}/${records.length}: ${record.file}:${record.start_line}`);
+    console.log(`  ${record.text}`);
+    console.log("\n  Context:");
+    record.context.forEach((line, contextIndex) => console.log(`  ${String(record.context_start_line + contextIndex).padStart(4)} | ${line}`));
+    while (true) {
+      const choice = (await reader.question("\n  [k]eep [d]elete [r]ewrite [e]scalate: ")).trim().toLowerCase();
+      if (choice === "k" || choice === "keep") {
+        decisions.push({ id: record.id, decision: "keep" });
+        break;
+      }
+      if (choice === "d" || choice === "delete") {
+        decisions.push({ id: record.id, decision: "delete" });
+        break;
+      }
+      if (choice === "e" || choice === "escalate") {
+        decisions.push({ id: record.id, decision: "escalate" });
+        break;
+      }
+      if (choice === "r" || choice === "rewrite") {
+        const replacement = await reader.question("  Replacement comment (without leading whitespace): ");
+        decisions.push({ id: record.id, decision: "rewrite", replacement });
+        break;
+      }
+      console.log("  Choose k, d, r, or e.");
+    }
+  }
+  reader.close();
+  mkdirSync(resolve(decisionsPath, ".."), { recursive: true });
+  writeFileSync(decisionsPath, `${JSON.stringify(decisions, null, 2)}\n`);
+  const changes = decisions.filter(({ decision }) => decision === "delete" || decision === "rewrite").length;
+  console.log(`\nReviewed ${records.length} comment(s); ${changes} change(s) selected.`);
+  if (!changes) return;
+  const confirmationReader = createInterface({ input, output });
+  const confirmation = (await confirmationReader.question("Apply these changes? [y/N] ")).trim().toLowerCase();
+  confirmationReader.close();
+  if (confirmation === "y" || confirmation === "yes") {
+    applyRecords(records, decisions, decisionsPath);
+    console.log("Changes applied. Run your formatter and tests, then inspect git diff.");
+  } else {
+    console.log(`Decisions saved to ${decisionsPath}; no files were changed.`);
+  }
+}
+
+function applyRecords(records, decisions, decisionsPath) {
+  const recordsPath = ".slop-cleaner/comments.json";
+  writeFileSync(recordsPath, `${JSON.stringify(records, null, 2)}\n`);
+  writeFileSync(decisionsPath, `${JSON.stringify(decisions, null, 2)}\n`);
+  apply(recordsPath, decisionsPath);
 }
 
 function help() {
-  console.log("Usage: slop-cleaner [run|extract|apply]");
+  console.log("Usage: slop-cleaner [run|review|extract|apply]");
   console.log("  slop-cleaner                 select an open PR and extract comments");
+  console.log("  slop-cleaner review ...      review extracted comments interactively");
   console.log("  slop-cleaner extract ...     extract comments for explicit refs");
   console.log("  slop-cleaner apply ...       apply reviewed decisions");
 }
@@ -187,6 +245,12 @@ async function main(argv) {
     if (outputPath) writeFileSync(outputPath, `${JSON.stringify(records, null, 2)}\n`);
     else console.log(JSON.stringify(records, null, 2));
     return;
+  }
+  if (subcommand === "review") {
+    const inputPath = args[args.indexOf("--input") + 1];
+    if (!inputPath) throw new Error("review requires --input");
+    const decisionsPath = args[args.indexOf("--decisions") + 1] || ".slop-cleaner/decisions.json";
+    return reviewRecords(JSON.parse(readFileSync(inputPath, "utf8")), decisionsPath);
   }
   if (subcommand === "apply") {
     const inputPath = args[args.indexOf("--input") + 1];
