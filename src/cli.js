@@ -178,29 +178,37 @@ function help() {
   console.log("  slop-cleaner apply ...       apply reviewed decisions");
 }
 
+function option(args, name) {
+  const index = args.indexOf(name);
+  return index >= 0 ? args[index + 1] : undefined;
+}
+
 async function main(argv) {
   const [subcommand, ...args] = argv;
   if (!subcommand || subcommand === "run") return runInteractive();
   if (subcommand === "--help" || subcommand === "-h") return help();
   if (subcommand === "extract") {
-    const base = args[args.indexOf("--base") + 1];
-    const head = args[args.indexOf("--head") + 1];
+    const base = option(args, "--base");
+    const head = option(args, "--head");
     if (!base || !head) throw new Error("extract requires --base and --head");
-    const records = extract({ base, head, context: Number(args[args.indexOf("--context") + 1] || 4) });
-    const outputPath = args[args.indexOf("--output") + 1];
-    if (outputPath) writeFileSync(outputPath, `${JSON.stringify(records, null, 2)}\n`);
+    const records = extract({ base, head, context: Number(option(args, "--context") || 4) });
+    const outputPath = option(args, "--output");
+    if (outputPath) {
+      mkdirSync(resolve(outputPath, ".."), { recursive: true });
+      writeFileSync(outputPath, `${JSON.stringify(records, null, 2)}\n`);
+    }
     else console.log(JSON.stringify(records, null, 2));
     return;
   }
   if (subcommand === "review") {
-    const inputPath = args[args.indexOf("--input") + 1];
+    const inputPath = option(args, "--input");
     if (!inputPath) throw new Error("review requires --input");
-    const decisionsPath = args[args.indexOf("--decisions") + 1] || ".slop-cleaner/decisions.json";
+    const decisionsPath = option(args, "--decisions") || ".slop-cleaner/decisions.json";
     return reviewRecords(JSON.parse(readFileSync(inputPath, "utf8")), decisionsPath);
   }
   if (subcommand === "apply") {
-    const inputPath = args[args.indexOf("--input") + 1];
-    const decisionsPath = args[args.indexOf("--decisions") + 1];
+    const inputPath = option(args, "--input");
+    const decisionsPath = option(args, "--decisions");
     if (!inputPath || !decisionsPath) throw new Error("apply requires --input and --decisions");
     return apply(inputPath, decisionsPath);
   }
