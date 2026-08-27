@@ -82,7 +82,18 @@ function apply(inputPath, decisionsPath, root = process.cwd()) {
     if (start < 0 || source.indexOf(record.raw, start + 1) >= 0) throw new Error(`stale or ambiguous comment ${record.id} in ${record.file}`);
     if (decision.decision === "rewrite" && typeof decision.replacement !== "string") throw new Error(`rewrite ${record.id} needs replacement`);
     if (!edits.has(file)) edits.set(file, []);
-    edits.get(file).push({ start, end: start + record.raw.length, raw: record.raw, replacement: decision.decision === "delete" ? "" : decision.replacement });
+    let editStart = start;
+    let editEnd = start + record.raw.length;
+    if (decision.decision === "delete") {
+      const lineStart = source.lastIndexOf("\n", start - 1) + 1;
+      const lineEnd = source.indexOf("\n", editEnd);
+      const endOfLine = lineEnd < 0 ? source.length : lineEnd;
+      if (/^\s*$/.test(source.slice(lineStart, start)) && /^\s*$/.test(source.slice(editEnd, endOfLine))) {
+        editStart = lineStart;
+        editEnd = lineEnd < 0 ? endOfLine : lineEnd + 1;
+      }
+    }
+    edits.get(file).push({ start: editStart, end: editEnd, raw: source.slice(editStart, editEnd), replacement: decision.decision === "delete" ? "" : decision.replacement });
   }
   for (const [file, fileEdits] of edits) {
     let source = readFileSync(file, "utf8");
