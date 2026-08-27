@@ -8,6 +8,9 @@ import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import { extractComments, parserByExtension } from "./parsers.js";
 
+const issueRepository = process.env.SLOP_CLEANER_REPOSITORY || "BertramPetersen/slop-cleaner";
+const packageVersion = JSON.parse(readFileSync(new URL("../package.json", import.meta.url))).version;
+
 function command(...args) {
   return execFileSync(args[0], args.slice(1), { encoding: "utf8" });
 }
@@ -195,11 +198,36 @@ function applyRecords(records, decisions, decisionsPath, root = process.cwd()) {
 }
 
 function help() {
-  console.log("Usage: slop-cleaner [run|review|extract|apply]");
+  console.log("Usage: slop-cleaner [run|review|extract|apply|feedback]");
   console.log("  slop-cleaner                 select an open PR and extract comments");
+  console.log("  slop-cleaner --feedback      report CLI friction as a GitHub issue");
   console.log("  slop-cleaner review ...      review extracted comments interactively");
   console.log("  slop-cleaner extract ...     extract comments for explicit refs");
   console.log("  slop-cleaner apply ...       apply reviewed decisions");
+}
+
+async function feedback() {
+  const reader = createInterface({ input, output });
+  const title = (await reader.question("Issue title: ")).trim();
+  if (!title) {
+    reader.close();
+    throw new Error("issue title cannot be empty");
+  }
+  const details = await reader.question("What happened, and what would have made it better?\n> ");
+  reader.close();
+  const body = [
+    details.trim(),
+    "",
+    `Reported from: ${process.cwd()}`,
+    `slop-cleaner version: ${packageVersion}`,
+    `Node: ${process.version}`,
+    `Platform: ${process.platform} ${process.arch}`
+  ].join("\n");
+  try {
+    console.log(command("gh", "issue", "create", "--repo", issueRepository, "--title", title, "--body", body).trim());
+  } catch (error) {
+    throw new Error(`could not create GitHub issue: ${error.message}`);
+  }
 }
 
 function option(args, name) {
@@ -210,6 +238,7 @@ function option(args, name) {
 async function main(argv) {
   const [subcommand, ...args] = argv;
   if (!subcommand || subcommand === "run") return runInteractive();
+  if (subcommand === "--feedback" || subcommand === "feedback") return feedback();
   if (subcommand === "--help" || subcommand === "-h") return help();
   if (subcommand === "extract") {
     const base = option(args, "--base");
