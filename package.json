@@ -1,0 +1,20 @@
+{
+  "name": "slop-cleaner",
+  "version": "0.1.0",
+  "description": "Review and clean unnecessary source-code comments in pull requests",
+  "type": "module",
+  "bin": {
+    "slop-cleaner": "src/cli.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test",
+    "start": "node src/cli.js"
+  },
+  "files": [
+    "src"
+  ],
+  "license": "MIT"
+}
