@@ -16,5 +16,10 @@
   "files": [
     "src"
   ],
-  "license": "MIT"
+  "license": "MIT",
+  "dependencies": {
+    "tree-sitter": "^0.25.1",
+    "tree-sitter-fsharp": "^0.3.11",
+    "typescript": "^6.0.3"
+  }
 }

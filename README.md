@@ -4,6 +4,9 @@ Review and clean unnecessary source-code comments introduced by pull requests. T
 call an LLM. It extracts comments locally so an interactive coding-agent session can make the
 semantic keep/delete/rewrite decision using its normal subscription.
 
+Comment extraction currently supports only `.ts`, `.tsx`, `.fs`, `.fsi`, and `.fsx`. Other files,
+including Markdown, JSON, YAML, and lockfiles, are ignored.
+
 ## Install
 
 ```bash

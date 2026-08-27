@@ -6,9 +6,7 @@ import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
-
-const lineMarkers = ["//", "#", "--"];
-const blockPairs = [["/*", "*/"], ["<!--", "-->"]];
+import { extractComments, parserByExtension } from "./parsers.js";
 
 function command(...args) {
   return execFileSync(args[0], args.slice(1), { encoding: "utf8" });
@@ -36,77 +34,25 @@ function changedLines(base, head) {
   return result;
 }
 
-function positionAt(source, offset) {
-  let line = 1;
-  let column = 1;
-  for (let index = 0; index < offset; index += 1) {
-    if (source[index] === "\n") {
-      line += 1;
-      column = 1;
-    } else {
-      column += 1;
-    }
-  }
-  return { line, column };
-}
-
-function scanComments(source) {
-  const comments = [];
-  let index = 0;
-  while (index < source.length) {
-    const quote = source[index];
-    if (quote === "'" || quote === '"' || quote === "`") {
-      index += 1;
-      while (index < source.length) {
-        if (source[index] === "\\") index += 2;
-        else if (source[index++] === quote) break;
-      }
-      continue;
-    }
-    const block = blockPairs.find(([start]) => source.startsWith(start, index));
-    if (block) {
-      const end = source.indexOf(block[1], index + block[0].length);
-      if (end === -1) break;
-      const finish = end + block[1].length;
-      comments.push({ start: index, end: finish, text: source.slice(index + block[0].length, end).trim(), raw: source.slice(index, finish) });
-      index = finish;
-      continue;
-    }
-    const marker = lineMarkers.find((candidate) => source.startsWith(candidate, index));
-    const lineStart = index === 0 || source[index - 1] === "\n";
-    const isDirective = marker === "#" && lineStart && /^(#!|#include|#define)/.test(source.slice(index));
-    if (marker && !(marker === "#" && isDirective)) {
-      const end = source.indexOf("\n", index);
-      const finish = end === -1 ? source.length : end;
-      comments.push({ start: index, end: finish, text: source.slice(index + marker.length, finish).trim(), raw: source.slice(index, finish) });
-      index = finish;
-      continue;
-    }
-    index += 1;
-  }
-  return comments;
-}
-
 function extract({ base, head, context = 4 }) {
   const changed = changedLines(base, head);
   const records = [];
   for (const [file, lines] of changed) {
+    if (!parserByExtension.has(file.slice(file.lastIndexOf(".")).toLowerCase())) continue;
     if (!existsSync(file)) continue;
     const source = readFileSync(file, "utf8");
     const sourceLines = source.split(/\r?\n/);
-    for (const comment of scanComments(source)) {
-      const start = positionAt(source, comment.start);
-      const end = positionAt(source, comment.end);
-      if (![...lines].some((line) => line >= start.line && line <= end.line)) continue;
-      const first = Math.max(1, start.line - context);
-      const last = Math.min(sourceLines.length, end.line + context);
+    for (const comment of extractComments(file, source)) {
+      if (![...lines].some((line) => line >= comment.start_line && line <= comment.end_line)) continue;
+      const first = Math.max(1, comment.start_line - context);
+      const last = Math.min(sourceLines.length, comment.end_line + context);
       records.push({
         id: `comment-${records.length + 1}`,
         file,
-        start_line: start.line,
-        end_line: end.line,
-        start_column: start.column,
-        end_column: end.column,
+        start_line: comment.start_line,
+        end_line: comment.end_line,
+        start_column: comment.start_column,
+        end_column: comment.end_column,
         text: comment.text,
         raw: comment.raw,
         context_start_line: first,
@@ -265,4 +211,4 @@ if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToP
   main(process.argv.slice(2)).catch((error) => { console.error(`slop-cleaner: ${error.message}`); process.exitCode = 1; });
 }
 
-export { apply, changedLines, extract, scanComments };
+export { apply, changedLines, extract };
