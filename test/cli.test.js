@@ -21,6 +21,14 @@ test("F# parser handles XML docs and nested blocks", () => {
   assert.equal(comments[1].start_line, 2);
 });
 
+test("groups adjacent standalone comments but not trailing comments", () => {
+  const comments = extractComments("example.fs", "/// first\n/// second\nlet value = 1 // trailing\n");
+  assert.equal(comments.length, 2);
+  assert.equal(comments[0].text, "first\nsecond");
+  assert.equal(comments[0].raw, "/// first\n/// second");
+  assert.equal(comments[1].text, "trailing");
+});
+
 test("unsupported files are ignored", () => {
   assert.deepEqual(extractComments("README.md", "<!-- not source -->"), []);
 });

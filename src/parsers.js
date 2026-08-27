@@ -15,7 +15,40 @@ export const parserByExtension = new Map([
 
 export function extractComments(file, source) {
   const parser = parserByExtension.get(file.slice(file.lastIndexOf(".")).toLowerCase());
-  return parser ? parser(source, file) : [];
+  return parser ? groupAdjacentComments(source, parser(source, file)) : [];
+}
+
+function groupAdjacentComments(source, comments) {
+  const located = [];
+  let searchFrom = 0;
+  for (const comment of comments) {
+    const start = source.indexOf(comment.raw, searchFrom);
+    if (start < 0) return comments;
+    located.push({ ...comment, startOffset: start, endOffset: start + comment.raw.length });
+    searchFrom = start + comment.raw.length;
+  }
+  const groups = [];
+  for (const comment of located) {
+    const previous = groups.at(-1);
+    const adjacent = previous && comment.start_line === previous.end_line + 1;
+    const standalone = isStandalone(source, comment);
+    if (!adjacent || !standalone || !previous.standalone) {
+      groups.push({ ...comment, standalone });
+      continue;
+    }
+    previous.raw = source.slice(previous.startOffset, comment.endOffset);
+    previous.text = `${previous.text}\n${comment.text}`;
+    previous.end_line = comment.end_line;
+    previous.end_column = comment.end_column;
+    previous.endOffset = comment.endOffset;
+  }
+  return groups.map(({ standalone, ...comment }) => comment);
+}
+
+function isStandalone(source, comment) {
+  const lineStart = source.lastIndexOf("\n", comment.startOffset - 1) + 1;
+  const lineEnd = source.indexOf("\n", comment.endOffset);
+  return /^\s*$/.test(source.slice(lineStart, comment.startOffset)) && /^\s*$/.test(source.slice(comment.endOffset, lineEnd < 0 ? source.length : lineEnd));
 }
 
 function extractTypeScriptComments(source, file) {
